@@ -99,26 +99,28 @@ def render_edit_plan_page(db_path):
     except Exception as e:
         exercise_options, name_lookup = [], {}
 
-    # --- 2. GLOBAL SETTINGS ---
-    st.subheader("Plan Settings")
-    c1, c2, c3 = st.columns([2, 1, 1])
-    macro_name = st.text_input("Macro Name", "New Plan (eg. Winter Bulk 26)")
+    macro_name = st.text_input("Macro Name", value="", placeholder="New Plan (eg. Winter Bulk 26)")
     num_weeks = st.number_input("Weeks", 1, 52, 4)
-    per_week = st.number_input("Workouts/Week", 1, 14, 3)
 
     # --- 3. BUILDER ---
     # Initialize workout_templates in session state if not already present
     if 'workout_templates' not in st.session_state:
-        st.session_state.workout_templates = [WorkoutTemplate(name=f"Day {i+1}") for i in range(int(per_week))]
+        st.session_state.workout_templates = []
     
-    # Adjust the number of workout templates if 'per_week' changes
-    while len(st.session_state.workout_templates) < int(per_week):
+    st.subheader("Workout Day Templates")
+    
+    add_day_col, _ = st.columns([0.2, 0.8])
+    if add_day_col.button("➕ Add Day"):
         st.session_state.workout_templates.append(WorkoutTemplate(name=f"Day {len(st.session_state.workout_templates)+1}"))
-    st.session_state.workout_templates = st.session_state.workout_templates[:int(per_week)]
+        st.rerun()
 
     for workout_template_index, workout_template in enumerate(st.session_state.workout_templates):
         with st.expander(f"Workout Template {workout_template_index+1}: {workout_template.name}", expanded=True):
-            workout_template.name = st.text_input("Workout Name", value=workout_template.name, key=f"wname_{workout_template_index}")
+            day_name_col, remove_day_col = st.columns([0.8, 0.2])
+            workout_template.name = day_name_col.text_input("Workout Name", value=workout_template.name, key=f"wname_{workout_template_index}")
+            if remove_day_col.button("🗑️ Remove Day", key=f"remove_day_{workout_template_index}"):
+                st.session_state.workout_templates.pop(workout_template_index)
+                st.rerun()
             
             # Use a copy to iterate to allow modification during iteration (e.g., pop)
             exercises_to_render = list(workout_template.exercises) 
@@ -265,8 +267,8 @@ def render_edit_plan_page(db_path):
             for key in list(st.session_state.keys()):
                 if key.startswith('wname_') or key.startswith('lib_ex_') or key.startswith('ex_name_input_') or key.startswith('set_count_') or key.startswith('rir_') or key.startswith('note_'):
                     del st.session_state[key]
-            # Ensure workout_templates is reset to its initial state based on per_week setting
-            st.session_state.workout_templates = [WorkoutTemplate(name=f"Day {i+1}") for i in range(int(per_week))]
+            # Ensure workout_templates is reset to its initial state (empty)
+            st.session_state.workout_templates = []
             st.rerun()
 
         except Exception as e:

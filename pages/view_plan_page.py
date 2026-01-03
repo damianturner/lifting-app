@@ -137,7 +137,7 @@ def _render_danger_zone(cursor, selected_macro_name, macro_id):
                 st.error("Could not delete plan.")
 
 def render_view_plan_page(db_path):
-    st.title("📂 Your Macro Plans")
+    st.title("Planned Macrocycles")
     
     if st.button("⬅️ Back to Home"):
         st.session_state.page = 'home'
