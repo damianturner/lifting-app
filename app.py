@@ -1,8 +1,8 @@
 import streamlit as st
 import os
 from init import setup_logging, init_db
-from view_plan_page import render_view_plan_page, render_sidebar_stats
-from edit_plan_page import render_edit_plan_page
+from pages.view_plan_page import render_view_plan_page, render_sidebar_stats
+from pages.edit_plan_page import render_edit_plan_page
 
 # 1. SETUP & CONFIG
 DB_PATH = os.path.join(".data", "fitness.db")
