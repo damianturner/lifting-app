@@ -186,7 +186,7 @@ def render_edit_plan_page(db_path):
                             st.rerun()
 
                     # --- Set-by-Set Rendering for RIR ---
-                    st.write("Blueprint (RIR per Set):")
+                    st.write("Set Plan:")
                     cols = st.columns(exercise_template.sets)
                     for set_index in range(exercise_template.sets):
                         rir_key = f"rir_{workout_template_index}_{exercise_index}_{set_index}"
@@ -195,12 +195,20 @@ def render_edit_plan_page(db_path):
                         while len(exercise_template.rirs) <= set_index:
                             exercise_template.rirs.append(2) # Pad with default RIR
                         
-                        exercise_template.rirs[set_index] = cols[set_index].number_input(
-                            f"Set {set_index+1}", 0, 5, 
-                            value=exercise_template.rirs[set_index],
+                        # Use sub-columns for each set's RIR input and "RIR" text
+                        set_col = cols[set_index]
+                        rir_input_col, rir_text_col = set_col.columns([0.7, 0.3]) # Adjust ratios as needed
+
+                        current_rir_value = exercise_template.rirs[set_index]
+                        
+                        exercise_template.rirs[set_index] = rir_input_col.number_input(
+                            f"Set {set_index+1}",
+                            min_value=0, max_value=5, 
+                            value=current_rir_value,
                             key=rir_key,
-                            label_visibility="visible"
+                            label_visibility="collapsed" # Hide default label to avoid redundancy
                         )
+                        rir_text_col.markdown("RIR") # Display "RIR" next to the input
                     
                     exercise_template.notes = st.text_area("Notes", value=exercise_template.notes, key=f"note_{workout_template_index}_{exercise_index}")
 
