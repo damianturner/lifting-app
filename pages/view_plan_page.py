@@ -22,10 +22,42 @@ def _fetch_macro_cycles(cursor):
 
 def _select_macro_plan(macro_cycles):
     """Handles Streamlit selectbox for macro plans and returns selected macro details."""
-    macro_options = {macro_cycle["name"]: macro_cycle["id"] for macro_cycle in macro_cycles}
-    selected_macro_name = st.selectbox("Select a Plan", options=list(macro_options.keys()))
-    macro_id = macro_options[selected_macro_name]
-    return selected_macro_name, macro_id
+    
+    # Dictionary to store counts of each macro cycle name
+    name_counts = {}
+    for mc in macro_cycles:
+        name_counts[mc["name"]] = name_counts.get(mc["name"], 0) + 1
+
+    macro_display_options = []
+    macro_display_to_id = {}
+
+    for macro_cycle in macro_cycles:
+        name = macro_cycle["name"]
+        macro_id = macro_cycle["id"]
+        
+        display_name = name
+        # If there are duplicates, append ID to make it unique for display
+        if name_counts[name] > 1:
+            display_name = f"{name} (ID: {macro_id})"
+        
+        macro_display_options.append(display_name)
+        macro_display_to_id[display_name] = macro_id
+
+    # Ensure there's a selected option if macro_display_options is not empty
+    if macro_display_options:
+        selected_display_name = st.selectbox("Select a Plan", options=macro_display_options)
+        macro_id = macro_display_to_id[selected_display_name]
+        
+        # Find the original selected macro name for rendering (e.g., danger zone)
+        original_selected_macro_name = next((mc['name'] for mc in macro_cycles if mc['id'] == macro_id), selected_display_name)
+    else:
+        # This case should ideally be handled before calling this function
+        # but as a fallback, ensure default values for safety.
+        selected_display_name = None
+        macro_id = None
+        original_selected_macro_name = None # Set original_selected_macro_name to None if no plans
+
+    return original_selected_macro_name, macro_id
 
 def _fetch_mini_cycles_for_macro(cursor, macro_id):
     """Fetches mini cycles for a given macro ID."""
