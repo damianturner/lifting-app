@@ -1,0 +1,4 @@
+[server]
+fileWatcherType = "none"
+[browser]
+gatherUsageStats = False
