@@ -8,7 +8,6 @@ from init import setup_logging, insert_exercise_to_library # Import the new func
 logger = logging.getLogger(__name__)
 
 # --- Dataclasses for structured state management ---
-
 @dataclass
 class ExerciseTemplate:
     name: str = ""
@@ -19,62 +18,73 @@ class ExerciseTemplate:
 @dataclass
 class WorkoutTemplate:
     name: str = ""
-    exercises: list[ExerciseTemplate] = field(default_factory=lambda: [ExerciseTemplate()])
+    exercises: list[ExerciseTemplate] = field(default_factory=list)
 
 # --- Callback Functions ---
-
 def _apply_exercise_choice(workout_template_idx, exercise_idx, lookup):
     """Updates the exercise name in the ExerciseTemplate object when a library item is picked."""
     choice_key = f"lib_ex_{workout_template_idx}_{exercise_idx}"
     exercise_choice = st.session_state[choice_key]
     
-    if exercise_choice == "-- Manual --":
+    if exercise_choice == "(Select Exercise)":
+        st.session_state.workout_templates[workout_template_idx].exercises[exercise_idx].name = "" # Set to empty if manual
         return
 
-    selected_name = lookup[exercise_choice]
+    selected_name = lookup[exercise_choice][0] # Access only the exercise name
     
     # Update the ExerciseTemplate object directly
     st.session_state.workout_templates[workout_template_idx].exercises[exercise_idx].name = selected_name
-    # Update the text input's session state key directly to reflect the change in UI
-    st.session_state[f"ex_name_input_{workout_template_idx}_{exercise_idx}"] = selected_name
-
 
 def render_edit_plan_page(db_path):
     st.title("Macrocycle Planner")
 
+    if 'show_add_exercise_form' not in st.session_state:
+        st.session_state.show_add_exercise_form = False
+
     if st.button("⬅️ Back to Home"):
         st.session_state.page = 'home'
         st.rerun()
-    
-    # --- Add New Exercise Section ---
-    with st.expander("➕ Add New Exercise to Library", expanded=False):
-        # Use session state for input fields to allow clearing
-        if "new_exercise_name" not in st.session_state:
-            st.session_state.new_exercise_name = ""
-        if "new_exercise_notes" not in st.session_state:
-            st.session_state.new_exercise_notes = ""
 
-        new_exercise_name_input = st.text_input("Exercise Name (e.g., 'Incline Dumbbell Press')", key="new_exercise_name")
-        new_exercise_notes_input = st.text_area("Default Notes (optional)", key="new_exercise_notes")
+    # --- New Add Exercise Form ---
+    if st.session_state.show_add_exercise_form:
+        st.subheader("Add New Exercise to Library")
         
-        if st.button("Save New Exercise to Library"):
-            if new_exercise_name_input:
-                # Get the logger instance
-                logger_for_init = setup_logging() 
-                if insert_exercise_to_library(db_path, new_exercise_name_input, new_exercise_notes_input, _logger=logger_for_init):
-                    st.success(f"Exercise '{new_exercise_name_input}' added to library!")
-                    # Clear input fields after successful save
-                    st.session_state.new_exercise_name = ""
-                    st.session_state.new_exercise_notes = ""
-                    st.rerun() # Rerun to update the exercise library dropdown
+        # Fetch all existing categories for the multiselect
+        form_conn = sqlite3.connect(db_path, check_same_thread=False) # Use a separate connection for the form
+        form_cur = form_conn.cursor()
+        all_categories = [row[0] for row in form_cur.execute("SELECT name FROM Categories ORDER BY name").fetchall()]
+        form_conn.close() # Close connection after fetching
+
+        with st.form("new_exercise_form", clear_on_submit=True):
+            new_exercise_name_input = st.text_input("Exercise Name (e.g., 'Incline Dumbbell Press')", key="new_exercise_name_form")
+            new_exercise_notes_input = st.text_area("Default Notes (optional)", key="new_exercise_notes_form")
+            selected_categories = st.multiselect(
+                "Body Part / Type Tags (select existing or type new ones)",
+                options=all_categories,
+                default=[],
+                key="new_exercise_categories_form"
+            )
+            
+            submitted = st.form_submit_button("Save New Exercise to Library")
+
+            if submitted:
+                if new_exercise_name_input:
+                    init_logger = setup_logging() 
+                    if insert_exercise_to_library(db_path, new_exercise_name_input, new_exercise_notes_input, selected_categories, _logger=init_logger):
+                        st.success(f"Exercise '{new_exercise_name_input}' added to library with tags: {', '.join(selected_categories) if selected_categories else 'None'}")
+                        st.session_state.show_add_exercise_form = False # Close form on success
+                        st.rerun() 
+                    else:
+                        st.error(f"Could not add '{new_exercise_name_input}'. It might already exist in the library.")
                 else:
-                    st.error(f"Could not add '{new_exercise_name_input}'. It might already exist in the library.")
-            else:
-                st.warning("Please enter an exercise name.")
+                    st.warning("Please enter an exercise name.")
+        
+        if st.button("Cancel", key="cancel_add_exercise_form"):
+            st.session_state.show_add_exercise_form = False
+            st.rerun()
 
     conn = sqlite3.connect(db_path, check_same_thread=False)
     cur = conn.cursor()
-
     # --- 1. LIBRARY DATA ---
     try:
         exercise_query = """
@@ -84,12 +94,12 @@ def render_edit_plan_page(db_path):
             LEFT JOIN Categories c ON ec.category_id = c.id
             GROUP BY e.id ORDER BY e.name
         """
-        raw_lib = cur.execute(exercise_query).fetchall()
+        exercise_library_data = cur.execute(exercise_query).fetchall()
         # exercise_options will display "Exercise Name [Category, ...]"
-        exercise_options = [f"{r[1]} [{r[2]}]" if r[2] else r[1] for r in raw_lib]
+        exercise_options = [f"{r[1]} [{r[2]}]" if r[2] else r[1] for r in exercise_library_data]
         # name_lookup will map "Exercise Name [Category, ...]" to (exercise_name, exercise_id)
         # It's important to update the name_lookup with the correct mapping if new exercises are added
-        name_lookup = {f"{r[1]} [{r[2]}]" if r[2] else r[1]: (r[1], r[0]) for r in raw_lib}
+        name_lookup = {f"{r[1]} [{r[2]}]" if r[2] else r[1]: (r[1], r[0]) for r in exercise_library_data}
         
     except Exception as e:
         exercise_options, name_lookup = [], {}
@@ -100,7 +110,6 @@ def render_edit_plan_page(db_path):
     macro_name = st.text_input("Macro Name", "New Plan (eg. Winter Bulk 26)")
     num_weeks = st.number_input("Weeks", 1, 52, 4)
     per_week = st.number_input("Workouts/Week", 1, 14, 3)
-
 
     # --- 3. BUILDER ---
     # Initialize workout_templates in session state if not already present
@@ -121,32 +130,60 @@ def render_edit_plan_page(db_path):
 
             for exercise_index, exercise_template in enumerate(exercises_to_render):
                 with st.container(border=True):
-                    h_cols = st.columns([2, 1])
+                    h_cols = st.columns([2, 0.5, 0.5]) # Adjusted column widths
                     
-                    h_cols[0].selectbox("Search Library", ["-- Manual --"] + exercise_options,
+                    # Determine the default index for the selectbox
+                    current_exercise_name = exercise_template.name
+                    default_index = 0
+                    if current_exercise_name:
+                        # Try to find the current exercise name in the display options
+                        # (Exercise Name [Category, ...])
+                        for i, option in enumerate(exercise_options):
+                            # Extract just the name from the option to match current_exercise_name
+                            if '[' in option:
+                                option_name = option.split(' [')[0]
+                            else:
+                                option_name = option
+                            
+                            if option_name == current_exercise_name:
+                                default_index = i + 1 # +1 because (Select Exercise)" is at index 0
+                                break
+
+                    h_cols[0].selectbox("Lift Name", ["(Select Exercise)"] + exercise_options,
                         key=f"lib_ex_{workout_template_index}_{exercise_index}",
                         on_change=_apply_exercise_choice,
-                        args=(workout_template_index, exercise_index, name_lookup))
+                        args=(workout_template_index, exercise_index, name_lookup),
+                        index=default_index)
                     
-                    if h_cols[1].button("🗑️", key=f"del_{workout_template_index}_{exercise_index}"):
+                    # Add new exercise button
+                    if h_cols[1].button("➕ Add New Exercise", key=f"add_new_ex_{workout_template_index}_{exercise_index}"):
+                        st.session_state.show_add_exercise_form = True
+                        st.rerun() # Rerun to display the form
+
+                    if h_cols[2].button("🗑️ Remove Lift", key=f"del_{workout_template_index}_{exercise_index}"):
                         workout_template.exercises.pop(exercise_index)
                         st.rerun()
 
-                    # --- Sync Inputs ---
-                    exercise_template.name = st.text_input("Exercise Name", value=exercise_template.name, key=f"ex_name_input_{workout_template_index}_{exercise_index}")
+                    # Sets input with + and - buttons
+                    st.write("Sets:")
+                    sets_cols = st.columns([0.5, 0.25, 0.25])
+                    current_sets = exercise_template.sets
                     
-                    num_sets_key = f"set_count_{workout_template_index}_{exercise_index}"
-                    num_sets_ui = st.number_input("Sets", 1, 20, value=exercise_template.sets, key=num_sets_key)
+                    sets_cols[0].write(f"**{current_sets}**")
                     
-                    # Resize RIR list if needed
-                    if num_sets_ui != exercise_template.sets:
-                        exercise_template.sets = num_sets_ui
-                        # Keep existing RIRs, pad with default if growing
-                        new_rirs = exercise_template.rirs[:num_sets_ui]
-                        while len(new_rirs) < num_sets_ui:
-                            new_rirs.append(2) # Default RIR
-                        exercise_template.rirs = new_rirs
-                        st.rerun() # Rerun to update RIR number inputs immediately
+                    if sets_cols[1].button("➖", key=f"minus_set_{workout_template_index}_{exercise_index}"):
+                        if exercise_template.sets > 1: # Ensure sets don't go below 1
+                            exercise_template.sets -= 1
+                            # Update RIR list immediately
+                            exercise_template.rirs = exercise_template.rirs[:exercise_template.sets]
+                            st.rerun()
+                    
+                    if sets_cols[2].button("➕", key=f"add_set_{workout_template_index}_{exercise_index}"):
+                        if exercise_template.sets < 20: # Cap at 20 sets
+                            exercise_template.sets += 1
+                            # Add default RIR for new set
+                            exercise_template.rirs.append(2)
+                            st.rerun()
 
                     # --- Set-by-Set Rendering for RIR ---
                     st.write("Blueprint (RIR per Set):")
