@@ -60,13 +60,6 @@ def seed_library(_conn):
     }
 
     # Map: { Scheme Name: (Reps List, Weights/Intensity List) }
-    schemes_map = {
-        "5x5 Strength": ([5, 5, 5, 5, 5], [0, 0, 0, 0, 0]),
-        "3x10 Hypertrophy": ([10, 10, 10], [0, 0, 0]),
-        "4x8 Standard": ([8, 8, 8, 8], [0, 0, 0, 0]),
-        "3x12 Accessory": ([12, 12, 12], [0, 0, 0]),
-        "Pyramid (10-8-6)": ([10, 8, 6], [0, 0, 0])
-    }
 
     all_cats = set(cat for cats in exercise_library_map.values() for cat in cats)
     for cat in all_cats:
@@ -83,10 +76,26 @@ def seed_library(_conn):
                 )
             """, (ex_name, cat))
 
-    for scheme_name, (reps, weights) in schemes_map.items():
-        cur.execute("""
-            INSERT OR IGNORE INTO RepSchemeLibrary (name, reps_json, weight_json)
-            VALUES (?, ?, ?)
-        """, (scheme_name, json.dumps(reps), json.dumps(weights)))
-
     _conn.commit()
+
+def insert_exercise_to_library(db_path, exercise_name, default_notes="", _logger=None):
+    if _logger is None:
+        _logger = logging.getLogger() # Get a default logger if not provided
+
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO ExerciseLibrary (name, default_notes) VALUES (?, ?)", (exercise_name, default_notes))
+        conn.commit()
+        _logger.info(f"Successfully added '{exercise_name}' to ExerciseLibrary.")
+        return True
+    except sqlite3.IntegrityError:
+        _logger.warning(f"Exercise '{exercise_name}' already exists in ExerciseLibrary (skipping).")
+        return False
+    except Exception as e:
+        _logger.error(f"Error adding exercise '{exercise_name}' to ExerciseLibrary: {e}", exc_info=True)
+        return False
+    finally:
+        if conn:
+            conn.close()

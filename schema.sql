@@ -21,13 +21,6 @@ CREATE TABLE IF NOT EXISTS ExerciseCategories (
     FOREIGN KEY (exercise_id) REFERENCES ExerciseLibrary(id) ON DELETE CASCADE,
     FOREIGN KEY (category_id) REFERENCES Categories(id) ON DELETE CASCADE
 );
--- 4. The Set/Rep Schemes --
-CREATE TABLE IF NOT EXISTS RepSchemeLibrary (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT UNIQUE,
-    reps_json TEXT,  
-    weight_json TEXT 
-);
 
 -- 2. THE BLUEPRINT (The 6-Week Plan Hierarchy)
 CREATE TABLE IF NOT EXISTS MacroCycles (
@@ -54,15 +47,15 @@ CREATE TABLE IF NOT EXISTS Workouts (
 
 -- This replaces the "Exercises" table for planning. 
 -- It is the "Blueprint" for what you SHOULD do.
-CREATE TABLE IF NOT EXISTS ExerciseTemplates (
+CREATE TABLE IF NOT EXISTS PlannedExercises (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workout_id INTEGER,
-    exercise_name TEXT,
-    target_reps_json TEXT,   -- Stores e.g., "[10, 8, 6]"
-    target_weights_json TEXT, -- Stores e.g., "[100, 110, 120]"
+    exercise_library_id INTEGER, -- Foreign key to the main exercise library
+    sets INTEGER,
+    target_rir_json TEXT, -- Stores e.g., "[2, 2, 1]"
     notes TEXT,
-    FOREIGN KEY (workout_id) REFERENCES Workouts(id) ON DELETE CASCADE
-
+    FOREIGN KEY (workout_id) REFERENCES Workouts(id) ON DELETE CASCADE,
+    FOREIGN KEY (exercise_library_id) REFERENCES ExerciseLibrary(id) ON DELETE CASCADE
 );
 
 -- 3. THE LOGS (The History / Actual Performance)
@@ -77,12 +70,12 @@ CREATE TABLE IF NOT EXISTS WorkoutLogs (
 CREATE TABLE IF NOT EXISTS SetLogs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workout_log_id INTEGER,
-    exercise_template_id INTEGER, -- Links back to the planned Exercise
+    planned_exercise_id INTEGER, -- Links back to the planned Exercise
     set_number INTEGER,
     weight REAL,
     reps INTEGER,
     rpe INTEGER,
     notes TEXT,
     FOREIGN KEY(workout_log_id) REFERENCES WorkoutLogs(id) ON DELETE CASCADE,
-    FOREIGN KEY(exercise_template_id) REFERENCES ExerciseTemplates(id) ON DELETE SET NULL
+    FOREIGN KEY(planned_exercise_id) REFERENCES PlannedExercises(id) ON DELETE SET NULL
 );
