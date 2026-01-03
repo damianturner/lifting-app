@@ -53,10 +53,10 @@ def init_db(db_path, _logger):
 def seed_library(_conn):
     cur = _conn.cursor()
     exercise_library_map = {
-        "Barbell Bench Press": ["Chest", "Shoulders", "Triceps"],
+        "Bench Press (Barbell)": ["Chest", "Shoulders", "Triceps"],
         "Pull Up": ["Back", "Biceps", "Forearms"],
         "Deadlift": ["Back", "Hamstrings", "Forearms"],
-        "Barbell Back Squat": ["Quads", "Glutes", "Hamstrings"]
+        "Squat (Barbell)": ["Quads", "Glutes", "Hamstrings"]
     }
 
     # Map: { Scheme Name: (Reps List, Weights/Intensity List) }

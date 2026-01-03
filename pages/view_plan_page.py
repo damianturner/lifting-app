@@ -73,13 +73,26 @@ def render_view_plan_page(db_path):
                             
                             for name, reps_json, weights_json, notes, body_parts in exercises:
                                 try:
-                                    # Parse the JSON lists
-                                    reps_list = json.loads(reps_json) if reps_json else []
+                                    # Parse the JSON lists which can be simple lists of numbers or lists of objects
+                                    reps_data = json.loads(reps_json) if reps_json else []
                                     weights_list = json.loads(weights_json) if weights_json else []
-                                    
-                                    sets_count = len(reps_list)
-                                    # Join with "/" for a clean visual representation
-                                    reps_display = " / ".join(map(str, reps_list))
+
+                                    reps_display_parts = []
+                                    for item in reps_data:
+                                        if isinstance(item, dict):
+                                            # New format: {"type": "rir", "value": 2} or {"type": "reps", "value": 10}
+                                            target_type = item.get("type", "reps")
+                                            target_value = item.get("value", "?")
+                                            if target_type.lower() == 'rir':
+                                                reps_display_parts.append(f"{target_value} RIR")
+                                            else:
+                                                reps_display_parts.append(str(target_value))
+                                        else:
+                                            # Old format: just a number
+                                            reps_display_parts.append(str(item))
+
+                                    sets_count = len(reps_display_parts)
+                                    reps_display = " / ".join(reps_display_parts)
                                     weights_display = " / ".join(map(str, weights_list))
                                     
                                     safe_notes = str(notes).replace("\n", " ") if notes else ""
