@@ -157,3 +157,120 @@ def render_edit_plan_page(db_path):
                     if h_cols[2].button("🗑️ Remove Lift", key=f"del_{workout_template_index}_{exercise_index}"):
                         workout_template.exercises.pop(exercise_index)
                         st.rerun()
+
+                    # Sets input with + and - buttons
+                    st.write("Sets:")
+                    sets_cols = st.columns([0.5, 0.25, 0.25])
+                    current_sets = exercise_template.sets
+                    
+                    sets_cols[0].write(f"**{current_sets}**")
+                    
+                    if sets_cols[1].button("➖", key=f"minus_set_{workout_template_index}_{exercise_index}"):
+                        if exercise_template.sets > 1: # Ensure sets don't go below 1
+                            exercise_template.sets -= 1
+                            # Update RIR list immediately
+                            exercise_template.rirs = exercise_template.rirs[:exercise_template.sets]
+                            st.rerun()
+                    
+                    if sets_cols[2].button("➕", key=f"add_set_{workout_template_index}_{exercise_index}"):
+                        if exercise_template.sets < 20: # Cap at 20 sets
+                            exercise_template.sets += 1
+                            # Add default RIR for new set
+                            exercise_template.rirs.append(2)
+                            st.rerun()
+
+                    # --- Set-by-Set Rendering for RIR ---
+                    st.write("Set Plan:")
+                    cols = st.columns(exercise_template.sets)
+                    for set_index in range(exercise_template.sets):
+                        rir_key = f"rir_{workout_template_index}_{exercise_index}_{set_index}"
+                        
+                        # Ensure rirs list is long enough for the current set_index
+                        while len(exercise_template.rirs) <= set_index:
+                            exercise_template.rirs.append(2) # Pad with default RIR
+                        
+                        # Use sub-columns for each set's RIR input and "RIR" text
+                        set_col = cols[set_index]
+                        rir_input_col, rir_text_col = set_col.columns([0.7, 0.3]) # Adjust ratios as needed
+
+                        current_rir_value = exercise_template.rirs[set_index]
+                        
+                        exercise_template.rirs[set_index] = rir_input_col.number_input(
+                            f"Set {set_index+1}",
+                            min_value=0, max_value=5, 
+                            value=current_rir_value,
+                            key=rir_key,
+                            label_visibility="collapsed" # Hide default label to avoid redundancy
+                        )
+                        rir_text_col.markdown("RIR") # Display "RIR" next to the input
+                    
+                    exercise_template.notes = st.text_area("Notes", value=exercise_template.notes, key=f"note_{workout_template_index}_{exercise_index}")
+
+            if st.button(f"➕ Add Exercise to {workout_template.name}", key=f"add_{workout_template_index}"):
+                workout_template.exercises.append(ExerciseTemplate())
+                st.rerun()
+
+    # --- 4. GENERATE ---
+    st.divider()
+    if st.button("🚀 Generate Blueprint", type="primary", use_container_width=True):
+        try:
+            # Check if all exercise names are available in the library
+            missing_exercises = []
+            for workout_template in st.session_state.workout_templates:
+                for exercise_template in workout_template.exercises:
+                    if exercise_template.name: # Only check if a name is provided
+                        # Try to find the exercise in name_lookup, which now contains (name, id)
+                        found = False
+                        for display_name, (ex_name, ex_id) in name_lookup.items():
+                            if ex_name == exercise_template.name:
+                                exercise_template.library_id = ex_id # Temporarily store ID
+                                found = True
+                                break
+                        if not found:
+                            missing_exercises.append(exercise_template.name)
+            
+            if missing_exercises:
+                st.error(f"Cannot save plan: The following exercises are not in the library or have empty names: {', '.join(set(missing_exercises))}. Please add them via an admin interface or select from the library.")
+                conn.close()
+                return
+
+            cur.execute("INSERT INTO MacroCycles (name) VALUES (?)", (macro_name,))
+            macro_cycle_id = cur.lastrowid
+            
+            for week_num in range(1, int(num_weeks) + 1):
+                cur.execute("INSERT INTO MiniCycles (macro_id, name) VALUES (?, ?)", (macro_cycle_id, f"Week {week_num}"))
+                mini_cycle_id = cur.lastrowid
+                
+                for workout_template_index, workout_template in enumerate(st.session_state.workout_templates):
+                    cur.execute("INSERT INTO Workouts (mini_id, name) VALUES (?, ?)", (mini_cycle_id, workout_template.name))
+                    workout_id = cur.lastrowid
+                    
+                    for exercise_template in workout_template.exercises:
+                        # Retrieve exercise_library_id based on exercise_template.name
+                        # This should be safe now because we pre-checked for missing exercises
+                        if not hasattr(exercise_template, 'library_id'):
+                            # Fallback if somehow library_id was not set (should not happen with pre-check)
+                            lookup_result = cur.execute("SELECT id FROM ExerciseLibrary WHERE name = ?", (exercise_template.name,)).fetchone()
+                            if lookup_result:
+                                exercise_template.library_id = lookup_result[0]
+                            else:
+                                raise ValueError(f"Exercise '{exercise_template.name}' not found in library during final save.")
+                        
+                        cur.execute("INSERT INTO PlannedExercises (workout_id, exercise_library_id, sets, target_rir_json, notes) VALUES (?, ?, ?, ?, ?)",
+                            (workout_id, exercise_template.library_id, exercise_template.sets, json.dumps(exercise_template.rirs), exercise_template.notes))
+            conn.commit()
+            st.success("Plan Saved!")
+            
+            # Clear relevant session state after saving to reset the form
+            for key in list(st.session_state.keys()):
+                if key.startswith('wname_') or key.startswith('lib_ex_') or key.startswith('ex_name_input_') or key.startswith('set_count_') or key.startswith('rir_') or key.startswith('note_'):
+                    del st.session_state[key]
+            # Ensure workout_templates is reset to its initial state based on per_week setting
+            st.session_state.workout_templates = [WorkoutTemplate(name=f"Day {i+1}") for i in range(int(per_week))]
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Failed to save plan: {e}")
+            logger.error(f"Plan generation failed: {e}", exc_info=True)
+        finally:
+            conn.close()
