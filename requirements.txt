@@ -1,2 +1,5 @@
 streamlit
+st-supabase-connection
+supabase
 pandas
+psycopg2-binary

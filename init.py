@@ -1,10 +1,11 @@
 import streamlit as st
-import sqlite3
+from streamlit.connections import BaseConnection
 import logging
-import sys
 import io
+import sys
 import os
-import json
+import psycopg2
+from supabase import create_client, Client
 
 # --- 1. LOGGING SETUP ---
 def setup_logging():
@@ -13,51 +14,87 @@ def setup_logging():
 
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
-
     if logger.hasHandlers():
         logger.handlers.clear()
 
-    # Terminal Handler
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     logger.addHandler(stdout_handler)
 
-    # Streamlit Buffer Handler
     buffer_handler = logging.StreamHandler(st.session_state.log_buffer)
     buffer_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%H:%M:%S'))
     logger.addHandler(buffer_handler)
-    
     return logger
 
-# --- 2. DATABASE INITIALIZATION ---
-@st.cache_resource
-def init_db(db_path, _logger):
-    # Ensure directory exists
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+# --- 2. SUPABASE CONNECTION CLASS ---
+class SupabaseConnection(BaseConnection[Client]):
+    """Custom Streamlit Connection for Supabase Client"""
     
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    try:
-        with open('schema.sql', 'r') as f:
-            schema_sql = f.read()
-        conn.executescript(schema_sql)
-        seed_library(conn, db_path) # Pass db_path here
-        _logger.info("Database and Seed Data initialized successfully.")
-    except Exception as e:
-        _logger.error(f"Database Init Failed: {e}", exc_info=True)
-    finally:
-        conn.close()
+    def _connect(self, **kwargs) -> Client:
+        # Prioritize secrets.toml [connections.supabase] structure
+        if "url" in self._secrets:
+            supabase_url = self._secrets["url"]
+            supabase_key = self._secrets["key"]
+        else:
+            # Fallback to direct secrets or env vars
+            supabase_url = kwargs.get("supabase_url") or st.secrets.get("SUPABASE_URL")
+            supabase_key = kwargs.get("supabase_key") or st.secrets.get("SUPABASE_KEY")
 
-# --- 3. DB SEEDING LOGIC ---
+        if not supabase_url or not supabase_key:
+            raise Exception("Missing SUPABASE_URL or SUPABASE_KEY.")
+            
+        return create_client(supabase_url, supabase_key)
+
+    @property
+    def client(self) -> Client:
+        return self._instance
+
+# --- 3. DATABASE INITIALIZATION ---
 @st.cache_resource
-def seed_library(_conn, db_path):
-    cur = _conn.cursor()
-    _logger = logging.getLogger() # Get a logger for seed_library
+def init_db(db_url, _logger):
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
 
-    # Define common categories
+        if not os.path.exists('schema.sql'):
+            _logger.warning("schema.sql not found.")
+            return
+
+        with open('schema.sql', 'r', encoding='utf-8-sig', errors='replace') as f:
+            schema_sql = f.read()
+        
+        # PostgreSQL allows multi-statement execution in one call
+        cur.execute(schema_sql)
+        conn.commit()
+        _logger.info("Database schema initialized successfully.")
+        
+    except Exception as e:
+        _logger.error(f"Database Init Failed: {e}")
+        st.error(f"Database initialization failed: {e}")
+        st.stop()
+    finally:
+        if conn:
+            conn.close()
+
+# --- 4. DATA INSERTION HELPERS ---
+def get_pg_connection(db_url):
+    return psycopg2.connect(db_url)
+
+def seed_base_data(_conn, _logger):
+    seed_key = "seeded_base_data"
+    if st.session_state.get(seed_key, False):
+        return
+
+    _logger.info("Seeding base data...")
+    cur = _conn.cursor()
+
     common_categories = ["Chest", "Back", "Shoulders", "Biceps", "Triceps", "Quads", "Hamstrings", "Glutes", "Calves", "Core", "Forearms", "Full Body", "Upper Body", "Lower Body", "Push", "Pull", "Legs", "Compound", "Isolation"]
     for cat in common_categories:
-        cur.execute("INSERT OR IGNORE INTO Categories (name) VALUES (?)", (cat,))
+        try:
+            cur.execute("INSERT INTO base_categories (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (cat,))
+        except Exception as e:
+            _logger.warning(f"Failed to seed base category '{cat}': {e}")
     _conn.commit()
 
     exercise_seed_data = {
@@ -76,51 +113,42 @@ def seed_library(_conn, db_path):
     }
 
     for ex_name, data in exercise_seed_data.items():
-        # Use the updated insert_exercise_to_library function for seeding
-        # It handles insertion into ExerciseLibrary, Categories (if new), and ExerciseCategories
-        success = insert_exercise_to_library(db_path, ex_name, data["notes"], data["categories"], _logger=_logger)
-        if not success:
-            _logger.warning(f"Failed to seed exercise '{ex_name}' or it already exists.")
+        insert_base_exercise_to_library(_conn, ex_name, data["notes"], data["categories"], _logger=_logger)
     
     _conn.commit()
+    st.session_state[seed_key] = True
+    _logger.info("Base data seeding complete.")
 
-def insert_exercise_to_library(db_path, exercise_name, default_notes="", category_names=None, _logger=None):
-    if _logger is None:
-        _logger = logging.getLogger() # Get a default logger if not provided
+def insert_base_exercise_to_library(_conn, exercise_name, default_notes="", category_names=None, _logger=None):
+    if _logger is None: _logger = logging.getLogger()
+    if category_names is None: category_names = []
 
-    if category_names is None:
-        category_names = []
-
-    conn = None
     try:
-        conn = sqlite3.connect(db_path, check_same_thread=False)
-        cur = conn.cursor()
+        cur = _conn.cursor()
+        cur.execute("INSERT INTO base_exercises (name, default_notes) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING RETURNING id",
+                    (exercise_name, default_notes))
+        
+        res = cur.fetchone()
+        if res:
+            exercise_id = res[0]
+        else:
+            cur.execute("SELECT id FROM base_exercises WHERE name = %s", (exercise_name,))
+            exercise_id = cur.fetchone()[0]
 
-        # Insert into ExerciseLibrary
-        cur.execute("INSERT OR IGNORE INTO ExerciseLibrary (name, default_notes) VALUES (?, ?)", (exercise_name, default_notes))
-        exercise_id = cur.lastrowid
-        _logger.info(f"Successfully added '{exercise_name}' to ExerciseLibrary with ID {exercise_id}.")
-
-        # Handle categories
         for cat_name in category_names:
-            # Insert category if it doesn't exist
-            cur.execute("INSERT OR IGNORE INTO Categories (name) VALUES (?)", (cat_name.strip(),))
-            # Get category ID
-            cur.execute("SELECT id FROM Categories WHERE name = ?", (cat_name.strip(),))
-            category_id = cur.fetchone()[0]
+            cat_name = cat_name.strip()
+            cur.execute("INSERT INTO base_categories (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id", (cat_name,))
+            cat_res = cur.fetchone()
+            category_id = cat_res[0] if cat_res else None
             
-            # Link exercise and category
-            cur.execute("INSERT OR IGNORE INTO ExerciseCategories (exercise_id, category_id) VALUES (?, ?)", (exercise_id, category_id))
-            _logger.info(f"Linked exercise '{exercise_name}' (ID {exercise_id}) to category '{cat_name}' (ID {category_id}).")
+            if not category_id:
+                cur.execute("SELECT id FROM base_categories WHERE name = %s", (cat_name,))
+                category_id = cur.fetchone()[0]
+            
+            cur.execute("INSERT INTO base_exercise_categories (exercise_id, category_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                        (exercise_id, category_id))
 
-        conn.commit()
         return True
-    except sqlite3.IntegrityError:
-        _logger.warning(f"Exercise '{exercise_name}' already exists in ExerciseLibrary (skipping).")
-        return False
     except Exception as e:
-        _logger.error(f"Error adding exercise '{exercise_name}' to ExerciseLibrary: {e}", exc_info=True)
+        _logger.error(f"Error adding base exercise '{exercise_name}': {e}")
         return False
-    finally:
-        if conn:
-            conn.close()
