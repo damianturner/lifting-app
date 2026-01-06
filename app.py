@@ -1,8 +1,8 @@
 import streamlit as st
 import os
-from init import setup_logging, init_db, SupabaseConnection, get_pg_connection, seed_base_data, _get_supabase_client_resource
-from view_plan_page import render_view_plan_page, render_sidebar_stats
-from edit_plan_page import render_edit_plan_page
+from logic.init import setup_logging, init_db, SupabaseConnection, get_pg_connection, seed_base_data, _get_supabase_client_resource
+from logic.view_plan_page import render_view_plan_page, render_sidebar_stats
+from logic.edit_plan_page import render_edit_plan_page
 
 # 1. SETUP & CONFIG
 # Pulling from the nested structure recommended for st.connection
