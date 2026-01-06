@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS ExerciseCategories (
     exercise_id INTEGER REFERENCES ExerciseLibrary(id) ON DELETE CASCADE,
     category_id INTEGER REFERENCES Categories(id) ON DELETE CASCADE,
     user_id UUID REFERENCES auth.users(id) DEFAULT auth.uid(),
-    PRIMARY KEY (exercise_id, category_id)
+    PRIMARY KEY (exercise_id, category_id, user_id)
 );
 
 ALTER TABLE ExerciseCategories ENABLE ROW LEVEL SECURITY;
@@ -214,9 +214,31 @@ FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp();
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
+  -- Insert into public.users
   INSERT INTO public.users (id, email)
   VALUES (NEW.id, NEW.email)
   ON CONFLICT (id) DO NOTHING;
+
+  -- Sync Categories
+  INSERT INTO Categories (name, user_id)
+  SELECT name, NEW.id FROM base_categories
+  ON CONFLICT (name, user_id) DO NOTHING;
+
+  -- Sync Exercises
+  INSERT INTO ExerciseLibrary (name, default_notes, user_id)
+  SELECT name, default_notes, NEW.id FROM base_exercises
+  ON CONFLICT (name, user_id) DO NOTHING;
+  
+  -- Sync Exercise-Category relationships
+  INSERT INTO ExerciseCategories (exercise_id, category_id, user_id)
+  SELECT el.id, c.id, NEW.id
+  FROM base_exercise_categories bec
+  JOIN base_exercises be ON bec.exercise_id = be.id
+  JOIN base_categories bc ON bec.category_id = bc.id
+  JOIN ExerciseLibrary el ON el.name = be.name AND el.user_id = NEW.id
+  JOIN Categories c ON c.name = bc.name AND c.user_id = NEW.id
+  ON CONFLICT (exercise_id, category_id, user_id) DO NOTHING;
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

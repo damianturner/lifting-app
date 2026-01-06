@@ -7,6 +7,8 @@ import os
 import psycopg2
 from supabase import create_client, Client
 
+
+
 # --- 1. LOGGING SETUP ---
 def setup_logging():
     if "log_buffer" not in st.session_state:
@@ -49,6 +51,15 @@ class SupabaseConnection(BaseConnection[Client]):
     def client(self) -> Client:
         return self._instance
 
+@st.cache_resource
+def _get_supabase_client_resource() -> Client:
+    """
+    Returns a cached Supabase client instance using Streamlit's connection.
+    This ensures the client is initialized once per session and reused.
+    """
+    conn = st.connection("supabase", type=SupabaseConnection)
+    return conn.client
+
 # --- 3. DATABASE INITIALIZATION ---
 @st.cache_resource
 def init_db(db_url, _logger):
@@ -57,11 +68,11 @@ def init_db(db_url, _logger):
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
-        if not os.path.exists('schema.sql'):
+        if not os.path.exists('schema/schema.sql'):
             _logger.warning("schema.sql not found.")
             return
 
-        with open('schema.sql', 'r', encoding='utf-8-sig', errors='replace') as f:
+        with open('schema/schema.sql', 'r', encoding='utf-8-sig', errors='replace') as f:
             schema_sql = f.read()
         
         # PostgreSQL allows multi-statement execution in one call

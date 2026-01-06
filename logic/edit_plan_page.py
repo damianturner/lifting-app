@@ -1,8 +1,9 @@
+from view_plan_page import _fetch_full_macro_cycle_details, _fetch_macro_cycles, render_sidebar_stats
 import streamlit as st
 import json
 import logging
 from dataclasses import dataclass, field
-from supabase import Client  # Import Supabase Client
+from init import _get_supabase_client_resource # Import the cached resource client
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +43,54 @@ def _apply_exercise_choice(workout_template_idx, exercise_idx, lookup):
     ].name = selected_name
 
 
-def render_add_exercise_form(supabase_client: Client, logger, parent_key):
-    st.subheader("Add New Exercise to Library")
 
-    # Fetch all existing categories for the multiselect using Supabase
+@st.cache_data(ttl=3600) # Cache for 1 hour
+def _get_all_categories():
+    """Fetches all category names from the database."""
+    supabase_client = _get_supabase_client_resource()
+    logger = logging.getLogger(__name__)
     try:
-        response = (
-            supabase_client.table("Categories").select("name").order("name").execute()
-        )
-        all_categories = [row["name"] for row in response.data] if response.data else []
+        response = supabase_client.table("categories").select("name").order("name").execute()
+        return [row["name"] for row in response.data] if response.data else []
     except Exception as e:
         logger.error(f"Error fetching categories from Supabase: {e}", exc_info=True)
-        all_categories = []  # Fallback to empty list
+        return []
 
+@st.cache_data(ttl=3600) # Cache for 1 hour
+def _get_exercise_library_data():
+    """Fetches all exercise library data with their categories."""
+    supabase_client = _get_supabase_client_resource()
+    logger = logging.getLogger(__name__)
+    try:
+        response = (
+            supabase_client.table("exerciselibrary")
+            .select("id, name, exercise_categories:exercisecategories(category:categories(name))")
+            .order("name")
+            .execute()
+        )
+
+        exercise_library_data = []
+        if response.data:
+            for ex in response.data:
+                category_names = []
+                if ex["exercise_categories"]:
+                    for ec in ex["exercise_categories"]:
+                        if ec["category"]:
+                            category_names.append(ec["category"]["name"])
+
+                exercise_library_data.append(
+                    (ex["id"], ex["name"], ", ".join(category_names) if category_names else None)
+                )
+        return exercise_library_data
+    except Exception as e:
+        logger.error(f"Error fetching exercise library data from Supabase: {e}", exc_info=True)
+        return []
+
+def render_add_exercise_form(logger, parent_key):
+    st.subheader("Add New Exercise to Library")
+
+    all_categories = _get_all_categories()
+    
     with st.form(f"new_exercise_form_{parent_key}", clear_on_submit=True):
         new_exercise_name_input = st.text_input(
             "Exercise Name (e.g., 'Incline Dumbbell Press')",
@@ -78,7 +114,7 @@ def render_add_exercise_form(supabase_client: Client, logger, parent_key):
                     # Insert into ExerciseLibrary
                     # RLS handles user_id, so we don't pass it explicitly here
                     response = (
-                        supabase_client.table("ExerciseLibrary")
+                        _get_supabase_client_resource.table("exerciselibrary")
                         .insert(
                             {
                                 "name": new_exercise_name_input,
@@ -95,7 +131,7 @@ def render_add_exercise_form(supabase_client: Client, logger, parent_key):
                         for cat_name in selected_categories:
                             # Try to get existing category or insert new one
                             cat_response = (
-                                supabase_client.table("Categories")
+                                _get_supabase_client_resource().table("categories")
                                 .select("id")
                                 .eq("name", cat_name)
                                 .execute()
@@ -106,15 +142,17 @@ def render_add_exercise_form(supabase_client: Client, logger, parent_key):
                             else:
                                 # If category doesn't exist for the current user, insert it
                                 insert_cat_response = (
-                                    supabase_client.table("Categories")
+                                    _get_supabase_client_resource().table("categories")
                                     .insert({"name": cat_name})
                                     .execute()
                                 )
                                 if insert_cat_response.data:
                                     category_id = insert_cat_response.data[0]["id"]
+                                    _get_all_categories.clear() # Clear cache if new category inserted
+
 
                             if category_id:
-                                supabase_client.table("ExerciseCategories").insert(
+                                _get_supabase_client_resource().table("exercisecategories").insert(
                                     {
                                         "exercise_id": exercise_id,
                                         "category_id": category_id,
@@ -123,6 +161,7 @@ def render_add_exercise_form(supabase_client: Client, logger, parent_key):
                         st.success(
                             f"Exercise '{new_exercise_name_input}' added to library with tags: {', '.join(selected_categories) if selected_categories else 'None'}"
                         )
+                        _get_exercise_library_data.clear() # Clear cache when new exercise is added
                         st.rerun()
                     else:
                         st.error(
@@ -143,7 +182,7 @@ def render_add_exercise_form(supabase_client: Client, logger, parent_key):
         st.rerun()  # Rerun to close the popover and clear the form
 
 
-def render_edit_plan_page(supabase_client: Client, logger):
+def render_edit_plan_page(logger):
     st.title("Macrocycle Planner")
 
     if st.button("⬅️ Back to Home"):
@@ -151,40 +190,13 @@ def render_edit_plan_page(supabase_client: Client, logger):
         st.rerun()
 
     # --- 1. LIBRARY DATA ---
-    try:
-        # Fetch exercises and their categories from Supabase
-        # This will require fetching from ExerciseLibrary and then ExerciseCategories/Categories
-        # We can optimize this by fetching all and joining in Python, or use an RPC if available for complex joins.
-        response = (
-            supabase_client.table("ExerciseLibrary")
-            .select("id, name, exercise_categories:ExerciseCategories(category:Categories(name))")
-            .order("name")
-            .execute()
-        )
-
-        exercise_library_data = []
-        if response.data:
-            for ex in response.data:
-                category_names = []
-                if ex["exercise_categories"]:
-                    for ec in ex["exercise_categories"]:
-                        if ec["category"]:
-                            category_names.append(ec["category"]["name"])
-
-                # Format similar to old SQLite version: (id, name, 'cat1, cat2')
-                exercise_library_data.append(
-                    (ex["id"], ex["name"], ", ".join(category_names) if category_names else None)
-                )
-
-        exercise_options = [f"{r[1]} [{r[2]}]" if r[2] else r[1] for r in exercise_library_data]
-        name_lookup = {
-            f"{r[1]} [{r[2]}]" if r[2] else r[1]: (r[1], r[0])
-            for r in exercise_library_data
-        }
-
-    except Exception as e:
-        logger.error(f"Error fetching exercise library data from Supabase: {e}", exc_info=True)
-        exercise_options, name_lookup = [], {}
+    exercise_library_data = _get_exercise_library_data()
+    
+    exercise_options = [f"{r[1]} [{r[2]}]" if r[2] else r[1] for r in exercise_library_data]
+    name_lookup = {
+        f"{r[1]} [{r[2]}]" if r[2] else r[1]: (r[1], r[0])
+        for r in exercise_library_data
+    }
 
     macro_name = st.text_input("Macro Name", value="", placeholder="New Plan (eg. Winter Bulk 26)")
     num_weeks = st.number_input("Weeks", 1, 52, 4)
@@ -249,7 +261,6 @@ def render_edit_plan_page(supabase_client: Client, logger):
 
                     with h_cols[1].popover("➕ Add New Exercise", use_container_width=True):
                         render_add_exercise_form(
-                            supabase_client,
                             logger,
                             parent_key=f"add_new_ex_{workout_template_index}_{exercise_index}",
                         )
@@ -319,8 +330,12 @@ def render_edit_plan_page(supabase_client: Client, logger):
 
     # --- 4. GENERATE ---
     st.divider()
-    if st.button("🚀 Generate Blueprint", type="primary", use_container_width=True):
+    if st.button("Generate Plan for Macrocycle", type="primary", use_container_width=True):
         try:
+            if not macro_name:
+                st.error("Please enter a macro name.")
+                return
+
             missing_exercises = []
             for workout_template in st.session_state.workout_templates:
                 for exercise_template in workout_template.exercises:
@@ -342,7 +357,7 @@ def render_edit_plan_page(supabase_client: Client, logger):
 
             # Insert MacroCycle
             macro_response = (
-                supabase_client.table("MacroCycles")
+                _get_supabase_client_resource().table("macrocycles")
                 .insert({"name": macro_name})
                 .execute()
             )
@@ -352,7 +367,7 @@ def render_edit_plan_page(supabase_client: Client, logger):
 
             for week_num in range(1, int(num_weeks) + 1):
                 mini_response = (
-                    supabase_client.table("MiniCycles")
+                    _get_supabase_client_resource().table("minicycles")
                     .insert(
                         {"macro_id": macro_cycle_id, "name": f"Week {week_num}"}
                     )
@@ -366,7 +381,7 @@ def render_edit_plan_page(supabase_client: Client, logger):
                     st.session_state.workout_templates
                 ):
                     workout_response = (
-                        supabase_client.table("Workouts")
+                        _get_supabase_client_resource().table("workouts")
                         .insert(
                             {"mini_id": mini_cycle_id, "name": workout_template.name}
                         )
@@ -379,7 +394,7 @@ def render_edit_plan_page(supabase_client: Client, logger):
                     for exercise_template in workout_template.exercises:
                         if not hasattr(exercise_template, "library_id"):
                             lib_lookup_response = (
-                                supabase_client.table("ExerciseLibrary")
+                                _get_supabase_client_resource().table("exerciselibrary")
                                 .select("id")
                                 .eq("name", exercise_template.name)
                                 .execute()
@@ -391,7 +406,7 @@ def render_edit_plan_page(supabase_client: Client, logger):
                                     f"Exercise '{exercise_template.name}' not found in library during final save."
                                 )
 
-                        supabase_client.table("PlannedExercises").insert(
+                        _get_supabase_client_resource().table("plannedexercises").insert(
                             {
                                 "workout_id": workout_id,
                                 "exercise_library_id": exercise_template.library_id,
@@ -401,6 +416,11 @@ def render_edit_plan_page(supabase_client: Client, logger):
                             }
                         ).execute()
             st.success("Plan Saved!")
+
+            # Clear relevant caches from view_plan_page
+            _fetch_macro_cycles.clear()
+            _fetch_full_macro_cycle_details.clear()
+            render_sidebar_stats.clear()
 
             for key in list(st.session_state.keys()):
                 if (

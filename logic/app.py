@@ -1,8 +1,8 @@
 import streamlit as st
 import os
-from init import setup_logging, init_db, SupabaseConnection, get_pg_connection, seed_base_data
-from pages.view_plan_page import render_view_plan_page, render_sidebar_stats
-from pages.edit_plan_page import render_edit_plan_page
+from init import setup_logging, init_db, SupabaseConnection, get_pg_connection, seed_base_data, _get_supabase_client_resource
+from view_plan_page import render_view_plan_page, render_sidebar_stats
+from edit_plan_page import render_edit_plan_page
 
 # 1. SETUP & CONFIG
 # Pulling from the nested structure recommended for st.connection
@@ -10,8 +10,6 @@ postgres_url = st.secrets.get("connections", {}).get("supabase", {}).get("db_url
 
 # Initialize Logger and Supabase Client
 logger = setup_logging()
-conn = st.connection("supabase", type=SupabaseConnection)
-supabase_client = conn.client
 
 # Initialize Database Schema and Base Data (Once per app lifecycle)
 if postgres_url:
@@ -44,27 +42,27 @@ def sync_user_data(pg_conn, logger, user_id):
         cur.execute("SELECT name FROM base_categories")
         base_categories = {row[0] for row in cur.fetchall()}
         
-        cur.execute("SELECT name FROM Categories WHERE user_id = %s", (user_id,))
+        cur.execute("SELECT name FROM categories WHERE user_id = %s", (user_id,))
         user_categories = {row[0] for row in cur.fetchall()}
         
         missing_categories = base_categories - user_categories
         if missing_categories:
             for cat_name in missing_categories:
-                cur.execute("INSERT INTO Categories (name, user_id) VALUES (%s, %s) ON CONFLICT (name, user_id) DO NOTHING", (cat_name, user_id))
+                cur.execute("INSERT INTO categories (name, user_id) VALUES (%s, %s) ON CONFLICT (name, user_id) DO NOTHING", (cat_name, user_id))
             logger.info(f"Synced {len(missing_categories)} categories for user {user_id}.")
 
         # Sync Exercises
         cur.execute("SELECT name, default_notes FROM base_exercises")
         base_exercises = {row[0]: row[1] for row in cur.fetchall()}
         
-        cur.execute("SELECT name FROM ExerciseLibrary WHERE user_id = %s", (user_id,))
+        cur.execute("SELECT name FROM exerciselibrary WHERE user_id = %s", (user_id,))
         user_exercises = {row[0] for row in cur.fetchall()}
 
         missing_exercises = base_exercises.keys() - user_exercises
         if missing_exercises:
             for ex_name in missing_exercises:
                 default_notes = base_exercises[ex_name]
-                cur.execute("INSERT INTO ExerciseLibrary (name, default_notes, user_id) VALUES (%s, %s, %s) ON CONFLICT (name, user_id) DO NOTHING", (ex_name, default_notes, user_id))
+                cur.execute("INSERT INTO exerciselibrary (name, default_notes, user_id) VALUES (%s, %s, %s) ON CONFLICT (name, user_id) DO NOTHING", (ex_name, default_notes, user_id))
             logger.info(f"Synced {len(missing_exercises)} exercises for user {user_id}.")
 
         # Sync Exercise-Category relationships
@@ -78,15 +76,15 @@ def sync_user_data(pg_conn, logger, user_id):
 
         for ex_name, cat_name in base_exercise_cat_pairs:
             # Get user's exercise_id and category_id
-            cur.execute("SELECT id FROM ExerciseLibrary WHERE name = %s AND user_id = %s", (ex_name, user_id))
+            cur.execute("SELECT id FROM exerciselibrary WHERE name = %s AND user_id = %s", (ex_name, user_id))
             ex_id_res = cur.fetchone()
-            cur.execute("SELECT id FROM Categories WHERE name = %s AND user_id = %s", (cat_name, user_id))
+            cur.execute("SELECT id FROM categories WHERE name = %s AND user_id = %s", (cat_name, user_id))
             cat_id_res = cur.fetchone()
 
             if ex_id_res and cat_id_res:
                 exercise_id = ex_id_res[0]
                 category_id = cat_id_res[0]
-                cur.execute("INSERT INTO ExerciseCategories (exercise_id, category_id, user_id) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                cur.execute("INSERT INTO exercisecategories (exercise_id, category_id, user_id) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                             (exercise_id, category_id, user_id))
 
         pg_conn.commit()
@@ -109,7 +107,7 @@ def login_form():
         if st.button("Log In", use_container_width=True):
             try:
                 # Supabase handles the verification
-                res = supabase_client.auth.sign_in_with_password({"email": email, "password": password})
+                res = _get_supabase_client_resource().auth.sign_in_with_password({"email": email, "password": password})
                 st.session_state.user = res.user
                 st.success("Logged in!")
                 st.rerun()
@@ -122,24 +120,44 @@ def login_form():
         st.caption("Password must be at least 6 characters.")
         if st.button("Create Account", use_container_width=True):
             try:
-                supabase_client.auth.sign_up({"email": new_email, "password": new_password})
+                _get_supabase_client_resource().auth.sign_up({"email": new_email, "password": new_password})
                 st.info("Check your email for a confirmation link!")
             except Exception as e:
                 st.error(f"Error: {e}")
 
+@st.cache_data(ttl=3600) # Cache user data for 1 hour
+def _get_current_user():
+    try:
+        _client = _get_supabase_client_resource()
+        response = _client.auth.get_user()
+        if response and response.user:
+            return response.user
+        return None
+    except Exception as e:
+        logger.debug(f"Error fetching current user: {e}")
+        return None
+
 def logout():
-    supabase_client.auth.sign_out()
+    _get_supabase_client_resource().auth.sign_out()
     if "user" in st.session_state:
         del st.session_state.user
+    _get_current_user.clear() # Clear the cached user on logout
     st.rerun()
+
+# Get current user (either from session state or by fetching)
+current_user = None
+if "user" in st.session_state:
+    current_user = st.session_state.user
+else:
+    current_user = _get_current_user()
+    if current_user:
+        st.session_state.user = current_user
 
 # Sync base data for the logged-in user
 pg_conn = None
 try:
-    # Use the session-safe get_user() call
-    response = supabase_client.auth.get_user()
-    if response and response.user:
-        user_id = response.user.id
+    if current_user:
+        user_id = current_user.id
         pg_conn = get_pg_connection(postgres_url)
         sync_user_data(pg_conn, logger, user_id)
     else:
@@ -152,7 +170,7 @@ finally:
 
 # 2. SIDEBAR TOOLS (Logs & Stats)
 def render_sidebar_tools():
-    render_sidebar_stats(supabase_client, logger) 
+    render_sidebar_stats()
     with st.sidebar:
         st.divider()
         st.subheader("🛠️ Internal Logs")
@@ -165,23 +183,16 @@ def render_sidebar_tools():
 
 render_sidebar_tools()
 
+# If no user in session state (meaning not logged in and not found via cache)
 if "user" not in st.session_state:
-    # Check if the user is already logged in from a previous browser session
-    try:
-        current_user = supabase_client.auth.get_user()
-        if current_user and current_user.user:
-            st.session_state.user = current_user.user
-        else:
-            login_form()
-            st.stop() # Stop execution here so they don't see the app
-    except:
-        login_form()
-        st.stop()
+    login_form()
+    st.stop() # Stop execution here so they don't see the app
 
 # --- IF LOGGED IN, SHOW THE APP ---
 st.sidebar.write(f"Logged in as: {st.session_state.user.email}")
 if st.sidebar.button("Logout"):
     logout()
+
 
 # 3. ROUTING LOGIC
 if 'page' not in st.session_state:
@@ -198,7 +209,7 @@ if st.session_state.page == 'home':
         st.rerun()
 
 elif st.session_state.page == 'view_plan':
-    render_view_plan_page(supabase_client, logger)
+    render_view_plan_page(logger)
 
 elif st.session_state.page == 'edit_plan':
-    render_edit_plan_page(supabase_client, logger)
+    render_edit_plan_page(logger)
