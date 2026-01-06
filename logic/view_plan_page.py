@@ -1,7 +1,7 @@
 import streamlit as st
 import logging
 import json
-from init import _get_supabase_client_resource # Import the cached resource client
+from logic.init import _get_supabase_client_resource # Import the cached resource client
 
 logger = logging.getLogger(__name__)
 

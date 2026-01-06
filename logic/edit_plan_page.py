@@ -1,9 +1,9 @@
-from view_plan_page import _fetch_full_macro_cycle_details, _fetch_macro_cycles, render_sidebar_stats
+from logic.view_plan_page import _fetch_full_macro_cycle_details, _fetch_macro_cycles, render_sidebar_stats
+from logic.init import _get_supabase_client_resource # Import the cached resource client
 import streamlit as st
 import json
 import logging
 from dataclasses import dataclass, field
-from init import _get_supabase_client_resource # Import the cached resource client
 
 logger = logging.getLogger(__name__)
 
